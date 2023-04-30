@@ -12,6 +12,10 @@ use std::{
 /// finished waiting, it will emit a single event via a `mpsc` channel.
 pub struct Debouncer<T> {
     thread: Option<JoinHandle<()>>,
+    // This is reference counted because the debouncer thread needs access to the controller, and
+    // the debouncer itself hasn't been created yet when the debouncer thread is created so we
+    // can't give it an `Arc<Debouncer<T>>`. Besides, the thread probably shouldn't have access to
+    // its own join handle!
     controller: Arc<DebouncerController<T>>,
 }
 
@@ -19,7 +23,7 @@ impl<T> Debouncer<T>
 where
     T: Send + 'static,
 {
-    pub fn start_new(debounce_time: Duration) -> Result<(Self, mpsc::Receiver<T>), io::Error> {
+    pub fn new(debounce_time: Duration) -> Result<(Self, mpsc::Receiver<T>), io::Error> {
         let controller = Arc::new(DebouncerController {
             state: Mutex::new(DebouncerState::new()),
             main_cvar: Condvar::new(),
@@ -35,17 +39,53 @@ where
         
         Ok((Self { thread: Some(thread), controller }, rx))
     }
+
+    pub fn new_arc(debounce_time: Duration)
+        -> Result<(Arc<Self>, mpsc::Receiver<T>), io::Error>
+    {
+        Self::new(debounce_time)
+            .map(|(this, rx)| (Arc::new(this), rx))
+    }
 }
 
 impl<T> Debouncer<T> {
-    pub fn controller(&self) -> &Arc<DebouncerController<T>> {
-        &self.controller
+    /// Send the debouncer a raw event that should be debounced. The
+    /// [`mpsc::Receiver`](mpsc::Receiver) associated with this debouncer will receive a message
+    /// after at least the amount of time specified when the debouncer was created.
+    /// 
+    /// The debouncer collects event data into an element of type `T`; the provided function `f`
+    /// specifies how to combine the new event data with the existing event data `Option<T>` to
+    /// produce a new `T`. For example, if `T = Vec<E>`, then `f` could be a function which pushes
+    /// to the vec:
+    /// 
+    /// ```no_run
+    /// debouncer.debounce(e, |acc, e| {
+    ///     let mut acc = acc.unwrap_or_default();
+    ///     acc.push(e);
+    ///     acc
+    /// })
+    /// ```
+    pub fn debounce<E, F>(&self, event_data: E, f: F)
+    where
+        F: FnOnce(Option<T>, E) -> T,
+    {
+        self.controller.notify_event(event_data, f)
+    }
+}
+
+impl<T> Debouncer<Vec<T>> {
+    pub fn debounce_push(&self, event_data: T) {
+        self.debounce(event_data, |acc, event_data| {
+            let mut acc = acc.unwrap_or_default();
+            acc.push(event_data);
+            acc
+        });
     }
 }
 
 impl<T> Drop for Debouncer<T> {
     fn drop(&mut self) {
-        self.controller().notify_shutdown();
+        self.controller.notify_shutdown();
 
         let thread = self.thread
             .take()
@@ -58,7 +98,7 @@ impl<T> Drop for Debouncer<T> {
     }
 }
 
-pub struct DebouncerController<T> {
+struct DebouncerController<T> {
     state: Mutex<DebouncerState<T>>,
     /// Condvar for notifying the debouncer that it has become dirty or that it should shutdown.
     main_cvar: Condvar,
@@ -81,7 +121,7 @@ impl<T> DebouncerController<T> {
     ///     acc
     /// }
     /// ```
-    pub fn notify_event<E, F>(&self, event_data: E, f: F)
+    fn notify_event<E, F>(&self, event_data: E, f: F)
     where
         F: FnOnce(Option<T>, E) -> T,
     {
@@ -97,16 +137,6 @@ impl<T> DebouncerController<T> {
         drop(guard);
         self.main_cvar.notify_one();
         self.sleep_cvar.notify_one();
-    }
-}
-
-impl<T> DebouncerController<Vec<T>> {
-    pub fn notify_event_push(&self, event_data: T) {
-        self.notify_event(event_data, |acc, event_data| {
-            let mut acc = acc.unwrap_or_default();
-            acc.push(event_data);
-            acc
-        });
     }
 }
 
