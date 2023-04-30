@@ -1,7 +1,9 @@
 use std::{
     sync::{Arc, Mutex, Condvar, mpsc},
     time::Duration,
-    thread::{self, JoinHandle}, io,
+    thread::{self, JoinHandle},
+    io,
+    panic,
 };
 
 /// A debouncer for deduplicating groups of events which occur at a similar time. Upon receiving an
@@ -9,7 +11,7 @@ use std::{
 /// during which time any additional events will be considered part of the same group. Once it has
 /// finished waiting, it will emit a single event via a `mpsc` channel.
 pub struct Debouncer<T> {
-    thread: JoinHandle<()>,
+    thread: Option<JoinHandle<()>>,
     controller: Arc<DebouncerController<T>>,
 }
 
@@ -31,16 +33,28 @@ where
             move || debounce_thread(debounce_state, tx, debounce_time)
         })?;
         
-        Ok((Self { thread, controller }, rx))
+        Ok((Self { thread: Some(thread), controller }, rx))
     }
+}
 
+impl<T> Debouncer<T> {
     pub fn controller(&self) -> &Arc<DebouncerController<T>> {
         &self.controller
     }
+}
 
-    pub fn close(self) -> thread::Result<()> {
+impl<T> Drop for Debouncer<T> {
+    fn drop(&mut self) {
         self.controller().notify_shutdown();
-        self.thread.join()
+
+        let thread = self.thread
+            .take()
+            .expect("debouncer thread has already been shut down");
+        
+        match thread.join() {
+            Ok(()) => (),
+            Err(err) => panic::resume_unwind(err),
+        }
     }
 }
 
