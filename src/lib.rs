@@ -83,6 +83,12 @@ impl<T> Debouncer<Vec<T>> {
     }
 }
 
+impl Debouncer<()> {
+    pub fn debounce_unit(&self) {
+        self.debounce((), |_acc, _event_data| ());
+    }
+}
+
 impl<T> Drop for Debouncer<T> {
     fn drop(&mut self) {
         self.controller.notify_shutdown();
