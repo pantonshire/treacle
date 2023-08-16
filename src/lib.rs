@@ -1,3 +1,5 @@
+pub mod fold;
+
 use std::{
     sync::{Arc, Mutex, Condvar, mpsc},
     time::Duration,
@@ -165,24 +167,6 @@ where
         self.controller.notify_event(event_data, &self.fold)
     }
 }
-
-// impl<T> Debouncer<Vec<T>> {
-//     #[inline]
-//     pub fn debounce_push(&self, event_data: T) {
-//         self.debounce(event_data, |acc, event_data| {
-//             let mut acc = acc.unwrap_or_default();
-//             acc.push(event_data);
-//             acc
-//         });
-//     }
-// }
-
-// impl Debouncer<()> {
-//     #[inline]
-//     pub fn debounce_unit(&self) {
-//         self.debounce((), |_acc, _event_data| ());
-//     }
-// }
 
 impl<RawEvent, DebouncedEvent, FoldFn> Drop for Debouncer<RawEvent, DebouncedEvent, FoldFn> {
     fn drop(&mut self) {
