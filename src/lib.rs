@@ -39,6 +39,8 @@ use std::{
 /// # Ok(())
 /// # }
 /// ```
+/// 
+/// When dropped, the debouncer will close the mpsc channel associated with it.
 pub struct Debouncer<RawEvent, DebouncedEvent, FoldFn> {
     thread: Option<JoinHandle<()>>,
     // This is reference counted because the debouncer thread needs access to the controller, and
