@@ -301,7 +301,15 @@ fn debounce_thread<T>(
         };
     
         match event {
-            DebouncerEvent::Shutdown => break 'debounce,
+            DebouncerEvent::Shutdown => {
+                // Before shutting down, check if there is anything in the accumulator and send it
+                // through the channel if it is still open.
+                if let Some(acc) = guard.swap_acc() {
+                    tx.send(acc).ok();
+                }
+
+                break 'debounce;
+            },
 
             DebouncerEvent::Dirty => {
                 // Wait for the debounce time, or until the `sleep_cvar` is notified and the
@@ -315,16 +323,68 @@ fn debounce_thread<T>(
                         !state.should_shutdown()
                     }).unwrap();
 
+                // Once we have finished waiting, send the contents of the accumulator through the
+                // channel.
+                if let Some(acc) = guard.swap_acc() {
+                    if tx.send(acc).is_err() {
+                        // If the other side of the channel has been closed, stop the debouncer.
+                        break 'debounce;
+                    }
+                }
+
+                // Check if the shutdown flag was set while we were waiting, and stop the deboucner
+                // if so.
                 if guard.should_shutdown() {
                     break 'debounce;
                 }
-
-                if let Some(acc) = guard.swap_acc() {
-                    if tx.send(acc).is_err() {
-                        break 'debounce
-                    }
-                }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{time::Duration, thread};
+
+    use super::{Debouncer, fold};
+
+    #[test]
+    fn test_debounce() {
+        let (debouncer, rx) = Debouncer::new(
+            Duration::from_millis(50),
+            fold::fold_vec_push::<u8>
+        ).unwrap();
+
+        for i in 0..3 {
+            for j in 0..10 {
+                debouncer.debounce(i * 10 + j);
+                thread::sleep(Duration::from_millis(4));
+            }
+
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert_eq!(rx.recv().unwrap(), &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(rx.recv().unwrap(), &[10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+        assert_eq!(rx.recv().unwrap(), &[20, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
+    }
+
+    #[test]
+    fn test_debouncer_shutdown() {
+        let (debouncer, rx) = Debouncer::new(
+            Duration::from_millis(100),
+            fold::fold_vec_push::<u8>
+        ).unwrap();
+
+        debouncer.debounce(1);
+        debouncer.debounce(2);
+        debouncer.debounce(3);
+
+        // Drop the debouncer, shutting it down.
+        drop(debouncer);
+
+        // Test that the events emitted just before the shutdown are not lost.
+        assert_eq!(rx.recv().unwrap(), &[1, 2, 3]);
+        assert!(rx.recv().is_err());
     }
 }
