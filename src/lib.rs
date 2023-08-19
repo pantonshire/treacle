@@ -40,7 +40,8 @@ use std::{
 /// # }
 /// ```
 /// 
-/// When dropped, the debouncer will close the mpsc channel associated with it.
+/// When dropped, the debouncer will gracefully shut down, closing the associated mpsc channel once
+/// it has finished sending any remaining events.
 pub struct Debouncer<RawEvent, DebouncedEvent, FoldFn> {
     thread: Option<JoinHandle<()>>,
     // This is reference counted because the debouncer thread needs access to the controller, and
@@ -57,11 +58,11 @@ where
     DebouncedEvent: Send + 'static,
     FoldFn: Fn(Option<DebouncedEvent>, RawEvent) -> DebouncedEvent,
 {
-    /// Create a new debouncer which deduplicates events it receives within the timeframe given by
-    /// `debounce_time`. The raw, un-debounced events can be sent to the debouncer with
-    /// [`Debouncer::debounce`](crate::Debouncer::debounce), and the resulting debounced events can
-    /// be received using the [`mpsc::Receiver`](std::sync::mpsc::Receiver) returned by this
-    /// function.
+    /// Create a new [`Debouncer`](Debouncer) which deduplicates events it receives within the
+    /// timeframe given by `debounce_time`. The raw, un-debounced events can be sent to the
+    /// debouncer with [`Debouncer::debounce`](crate::Debouncer::debounce), and the resulting
+    /// debounced events can be received using the [`mpsc::Receiver`](std::sync::mpsc::Receiver)
+    /// returned by this function.
     /// 
     /// Events are deduplicated using the given `fold` function, which combines the current
     /// deduplicated event (an `Option<DebouncedEvent>`) with a new `RawEvent` to produce a new
@@ -93,6 +94,9 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    /// 
+    /// When the returned [`Debouncer`](Debouncer) is dropped it will gracefully shut down, closing
+    /// the associated mpsc channel once it has finished sending any remaining events.
     /// 
     /// An [`io::Error`](std::io::Error) will be returned by this function if spawning the
     /// debouncer thread fails.
