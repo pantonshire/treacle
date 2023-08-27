@@ -1,5 +1,5 @@
 pub mod fold;
-mod next;
+pub mod next;
 
 use std::{
     sync::{Arc, Mutex, Condvar, mpsc},
