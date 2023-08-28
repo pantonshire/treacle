@@ -47,6 +47,9 @@ use std::{
 /// assert_eq!(rx.recv().unwrap(), &[10, 20]);
 /// assert_eq!(rx.recv().unwrap(), &[30]);
 /// ```
+/// 
+/// Both the `DebouncerTx` and `DebouncerRx` may be cloned, allowing multiple event senders and
+/// multiple event receivers for a single debouncer.
 pub fn debouncer<R, D, F>(debounce_time: Duration, fold: F)
     -> (DebouncerTx<R, D, F>, DebouncerRx<D>)
 where
@@ -67,6 +70,9 @@ where
     (tx, rx)
 }
 
+/// The "send" half of a debouncer, through which raw events are sent to be debounced. To create a
+/// new debouncer, see the [`debouncer`](debouncer) function. To send raw events, see
+/// [`DebouncerTx::send`](DebouncerTx::send).
 pub struct DebouncerTx<R, D, F> {
     debouncer: Arc<Debouncer<D>>,
     fold: F,
@@ -77,6 +83,50 @@ impl<R, D, F> DebouncerTx<R, D, F>
 where
     F: Fn(Option<D>, R) -> D,
 {
+    /// Send a raw event to the debouncer, which will be grouped with other raw events sent at a
+    /// similar time. Grouping is performed using the "fold" function this `DebouncerTx` was
+    /// created with.
+    /// 
+    /// An error is returned if there are no [`DebouncerRx`](DebouncerRx)s associated with the
+    /// debouncer left to receive events.
+    /// 
+    /// ```
+    /// # use std::{panic, thread, time::Duration};
+    /// # use treacle::next::debouncer;
+    /// // Create a new debouncer which takes raw events of type `u32` and
+    /// // combines them by converting them to `u64`s and adding them together.
+    /// let (tx, rx) = debouncer::<u32, u64, _>(
+    ///     Duration::from_millis(500),
+    ///     |acc, raw_event| {
+    ///         acc.unwrap_or_default() + u64::from(raw_event)
+    ///     });
+    /// 
+    /// // Spawn a thread to receive the events we are about to send.
+    /// let t = thread::spawn(move || {
+    ///     assert_eq!(rx.recv().unwrap(), 3);  // 1 + 2
+    ///     assert_eq!(rx.recv().unwrap(), 12); // 3 + 4 + 5
+    /// });
+    /// 
+    /// // Send two raw events in quick succession.
+    /// tx.send(1).unwrap();
+    /// tx.send(2).unwrap();
+    /// 
+    /// // Wait, then send three more raw events.
+    /// thread::sleep(Duration::from_millis(500));
+    /// tx.send(3).unwrap();
+    /// tx.send(4).unwrap();
+    /// tx.send(5).unwrap();
+    /// 
+    /// // Wait for the receive thread to finish.
+    /// if let Err(err) = t.join() {
+    ///     panic::resume_unwind(err);
+    /// }
+    /// 
+    /// // We moved `rx` into the receive thread, so when the receive thread
+    /// // finishes, `rx` is dropped. `rx` was the only `DebouncerRx`, so there
+    /// // is nothing left to receive events we send, so an error is returned.
+    /// assert!(tx.send(6).is_err());
+    /// ```
     pub fn send(&self, event: R) -> Result<(), SendError<R>> {
         self.debouncer.push(event, &self.fold)
     }
@@ -117,15 +167,100 @@ impl<R, D, F> Drop for DebouncerTx<R, D, F> {
     }
 }
 
+/// The "receive" half of a debouncer, which receives events which have been debounced by grouping
+/// raw events which occured close together in time. To create a new debouncer, see the
+/// [`debouncer`](debouncer) function. To receive debounced events, see
+/// [`DebouncerRx::recv`](DebouncerRx::recv) or [`DebouncerRx::try_recv`](DebouncerRx::try_recv).
 pub struct DebouncerRx<D> {
     debouncer: Arc<Debouncer<D>>
 }
 
 impl<D> DebouncerRx<D> {
+    /// Receive a debounced event from the debouncer. If there is not a debounced event available
+    /// to be received, the function will wait for one.
+    /// 
+    /// An error is returned if there are no more [`DebouncerTx`](DebouncerTx)s left to send events
+    /// and there are no more events left to receive.
+    /// 
+    /// ```
+    /// # use std::{panic, thread, time::Duration};
+    /// # use treacle::next::debouncer;
+    /// // Create a new debouncer which takes raw events of type `u8` and
+    /// // combines them by ORing them together.
+    /// let (tx, rx) = debouncer::<u8, u8, _>(
+    ///     Duration::from_millis(500),
+    ///     |acc, raw_event| {
+    ///         acc.unwrap_or_default() | raw_event
+    ///     });
+    /// 
+    /// // Create a thread to send raw events to the debouncer.
+    /// let t = thread::spawn(move || {
+    ///     // Send three raw events in quick succession.
+    ///     tx.send(0b00001000).unwrap();
+    ///     tx.send(0b00000100).unwrap();
+    ///     tx.send(0b00000010).unwrap();
+    /// 
+    ///     // Wait, then send more raw events.
+    ///     thread::sleep(Duration::from_millis(500));
+    ///     tx.send(0b10000000).unwrap();
+    ///     tx.send(0b00100000).unwrap();
+    /// 
+    ///     // Wait, then send a final batch of raw events.
+    ///     thread::sleep(Duration::from_millis(500));
+    ///     tx.send(0b01000000).unwrap();
+    ///     tx.send(0b00000001).unwrap();
+    /// });
+    /// 
+    /// // Receive the first two debounced events from the debouncer, created
+    /// // by ORing the raw events together that occurred within the same 500ms
+    /// // window.
+    /// assert_eq!(rx.recv().unwrap(), 0b00001110);
+    /// assert_eq!(rx.recv().unwrap(), 0b10100000);
+    /// 
+    /// // Wait for the send thread to finish. The send thread owns `tx`, so it
+    /// // will be dropped once the thread finishes.
+    /// if let Err(err) = t.join() {
+    ///     panic::resume_unwind(err);
+    /// }
+    /// 
+    /// // `tx` has been dropped, but there is still one last event left for us
+    /// // to receive.
+    /// assert_eq!(rx.recv().unwrap(), 0b01000001);
+    /// 
+    /// // There are no more events to receive and no more `DebouncerTx`s left
+    /// // to send events, so attempting to receive results in an error.
+    /// assert!(rx.recv().is_err());
+    /// ```
     pub fn recv(&self) -> Result<D, ReceiveError> {
         self.debouncer.pop()
     }
 
+    /// An alternative to [`DebouncerRx::recv`](DebouncerRx::recv) which returns `None` if there is
+    /// not a debounced event immediately available, instead of waiting for it to become available.
+    /// 
+    /// An error is returned if there are no more [`DebouncerTx`](DebouncerTx)s left to send events
+    /// and there are no more events left to receive.
+    /// 
+    /// ```
+    /// # use std::{thread, time::Duration};
+    /// # use treacle::next::debouncer;
+    /// // Create a new debouncer which takes raw events of type `u8` and
+    /// // combines them by ORing them together.
+    /// let (tx, rx) = debouncer::<u8, u8, _>(
+    ///     Duration::from_millis(500),
+    ///     |acc, raw_event| {
+    ///         acc.unwrap_or_default() | raw_event
+    ///     });
+    /// 
+    /// tx.send(0b00001000).unwrap();
+    /// tx.send(0b00000100).unwrap();
+    /// tx.send(0b00000010).unwrap();
+    /// 
+    /// assert_eq!(rx.try_recv().unwrap(), None);
+    /// 
+    /// thread::sleep(Duration::from_millis(500));
+    /// assert_eq!(rx.try_recv().unwrap(), Some(0b00001110));
+    /// ```
     pub fn try_recv(&self) -> Result<Option<D>, ReceiveError> {
         self.debouncer.try_pop()
     }
@@ -153,6 +288,8 @@ impl<D> Drop for DebouncerRx<D> {
     }
 }
 
+/// An error indicating that there are no more [`DebouncerRx`](DebouncerRx)s left to receive
+/// events. The raw event that could not be sent is included in the error so it is not lost.
 pub struct SendError<T>(pub T);
 
 impl<T> fmt::Debug for SendError<T> {
@@ -169,6 +306,8 @@ impl<T> fmt::Display for SendError<T> {
 
 impl<T> error::Error for SendError<T> {}
 
+/// An error indicating that the debouncer has no more events left to receive, and there are no
+/// more [`DebouncerTx`](DebouncerTx)s left to send events.
 #[derive(Debug)]
 pub struct ReceiveError;
 
