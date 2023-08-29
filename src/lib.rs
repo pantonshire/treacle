@@ -736,7 +736,7 @@ struct CountOverflowError;
 
 #[cfg(test)]
 mod tests {
-    use std::{time::Duration, thread};
+    use std::{time::{Duration, Instant}, thread};
 
     use super::{debouncer, fold};
 
@@ -772,5 +772,59 @@ mod tests {
         // Test that the events emitted just before the shutdown are not lost.
         assert_eq!(rx.recv().unwrap(), &[1, 2, 3]);
         assert!(rx.recv().is_err());
+    }
+
+    #[test]
+    fn test_multi_tx() {
+        let (tx1, rx) = debouncer(Duration::from_millis(100), fold::fold_vec_push::<u8>);
+
+        let tx2 = tx1.clone();
+
+        tx1.send(1).unwrap();
+        tx2.send(2).unwrap();
+        assert_eq!(rx.recv().unwrap(), &[1, 2]);
+
+        drop(tx1);
+
+        tx2.send(3).unwrap();
+        tx2.send(4).unwrap();
+        assert_eq!(rx.recv().unwrap(), &[3, 4]);
+
+        let start_time = Instant::now();
+        tx2.send(5).unwrap();
+        tx2.send(6).unwrap();
+        assert_eq!(rx.recv().unwrap(), &[5, 6]);
+        assert!(Instant::now().duration_since(start_time) >= Duration::from_millis(100));
+
+        tx2.send(7).unwrap();
+        tx2.send(8).unwrap();
+        drop(tx2);
+        assert_eq!(rx.recv().unwrap(), &[7, 8]);
+        assert!(rx.recv().is_err());
+    }
+
+    #[test]
+    fn test_multi_rx() {
+        let (tx, rx1) = debouncer(Duration::from_millis(100), fold::fold_vec_push::<u8>);
+
+        let rx2 = rx1.clone();
+
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        assert_eq!(rx1.recv().unwrap(), &[1, 2]);
+
+        tx.send(3).unwrap();
+        tx.send(4).unwrap();
+        assert_eq!(rx2.recv().unwrap(), &[3, 4]);
+
+        drop(rx1);
+
+        tx.send(5).unwrap();
+        tx.send(6).unwrap();
+        assert_eq!(rx2.recv().unwrap(), &[5, 6]);
+
+        drop(rx2);
+
+        assert!(tx.send(7).is_err());
     }
 }
