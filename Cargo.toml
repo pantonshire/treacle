@@ -5,6 +5,7 @@ edition = "2021"
 authors = ["Tom Panton <pantonshire@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/pantonshire/treacle"
+homepage = "https://github.com/pantonshire/treacle"
 description = "Event debouncer"
 readme = "README.md"
 keywords = ["debounce", "debouncer"]
