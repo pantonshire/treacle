@@ -16,7 +16,8 @@ tx sends raw un-debounced events to the debouncer, and the rx receives the debou
 the debouncer. Both halves can be cloned to allow for multiple senders and receivers.
 
 ```rust
-# use std::{thread, time::Duration};
+use std::{thread, time::Duration};
+
 // Create a new debouncer which takes raw events of type `u32` and outputs
 // debounced events of type `Vec<u32>`.
 let (tx, rx) = treacle::debouncer::<u32, Vec<u32>, _>(
