@@ -1,2 +1,5 @@
 [workspace]
-members = ["treacle"]
+members = [
+    "treacle",
+    "treacle_notify",
+]
